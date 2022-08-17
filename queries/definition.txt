@@ -1,0 +1,65 @@
+Tokens
+
+ACTION
+get, select, fetch, show me
+delete, toss, remove
+update, change
+add, create, insert
+
+SPECIAL ACTION
+find
+move ... to
+
+RETURN
+all, everything, anything
+
+NARROWED RETURN
+the
+most searched thing
+least searched thing
+oldest thing
+newest thing
+my {1}
+
+FILTER
+named, called
+described as
+tagged
+located at
+
+FILTER MODIFIER
+exactly
+cased, case sensitive
+
+COMBINER
+and, \,
+or
+
+END
+.
+
+LOCATION
+by, beside, near, around
+on
+at
+in, inside, within
+from {2}
+
+ACTION RETURN (FILTER + COMBINERS) END
+ACTION RETURN (FILTER + COMBINERS) LOCATION RETURN (FILTER + COMBINERS) END
+
+Notes
+
+Search strings have wildcards by default, disabled by exactly
+Search strings are case-insensitive by default, disabled by cased
+Quotes can be omitted for strings which contain no keywords
+
+{1} has implied "named" appended
+{2} at or in based on context
+
+
+Other explanations
+
+the ... thing statement
+used to narrow a search
+can be just "the thing" - warns if more than one match
