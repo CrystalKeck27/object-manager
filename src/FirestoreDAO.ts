@@ -5,7 +5,6 @@ import {
     getDocs,
     query,
     where,
-    QueryDocumentSnapshot,
     updateDoc,
     AddPrefixToKeys
 } from "firebase/firestore/lite";
@@ -15,23 +14,28 @@ export interface BasicObject extends DocumentData {
     name: string;
     description: string;
     tags: string[]; // must be lowercase
-    relations?: {
-        on?: DocumentReference[];
-        by?: DocumentReference[];
-        in?: DocumentReference[];
-    };
+    on?: DocumentReference;
+    by?: DocumentReference;
+    in?: DocumentReference;
 }
 
 export interface ObjectUpdate extends AddPrefixToKeys<string, any> {
     name?: string;
     description?: string;
     tags?: string[]; // must be lowercase
-    relations?: {
-        on?: DocumentReference[];
-        by?: DocumentReference[];
-        in?: DocumentReference[];
-    };
+    on?: DocumentReference;
+    by?: DocumentReference;
+    in?: DocumentReference;
 }
+
+export const fieldIsArray = {
+    name: false,
+    description: false,
+    tags: true,
+    on: false,
+    by: false,
+    in: false
+};
 
 export interface ConsumableObject extends BasicObject {
     count: number;
@@ -50,10 +54,10 @@ export async function nameExists(name: string): Promise<boolean> {
     return matches.docs.length > 0;
 }
 
-export async function getDocByName(name: string): Promise<QueryDocumentSnapshot | undefined> {
+export async function getDocRefByName(name: string): Promise<DocumentReference | undefined> {
     const q = query(objectsReference, where("name", "==", name));
     const matches = await getDocs(q);
-    return !matches.empty ? matches.docs.at(0) : undefined;
+    return !matches.empty ? matches.docs.at(0).ref : undefined;
 }
 
 export async function getObjectByTag(tag: string): Promise<DocumentData | undefined> {

@@ -3,7 +3,6 @@ Tokens
 ACTION
 get, select, fetch, show me
 delete, toss, remove
-update, change
 add, create, insert
 
 SPECIAL ACTION
@@ -63,3 +62,28 @@ Other explanations
 the ... thing statement
 used to narrow a search
 can be just "the thing" - warns if more than one match
+
+Grammar
+
+locationField = ['on', 'in', 'by'...]
+stringField = ['named', 'described as', 'called'...]
+stringListField = ['tagged']
+
+stringLiteral = .*
+andSeparator = ['and', ',']
+orSeparator = ['or', ',']
+anySeparator = ['and', 'or', ',']
+
+// last andSeparator must be 'and'
+stringLiteralList = stringLiteral (andSeparator stringLiteral)*
+
+filter = stringField stringLiteral | stringListField stringLiteralList | locationField query
+
+selectAction = ['select', 'get', 'show me'...]
+deleteAction = ['delete', 'toss', 'remove']
+
+// separators cannot have both 'and' and 'or'
+filterList = filter (anySeparator filter)
+
+// if
+onl = ['the', 'my'] stringLiteral? thing?

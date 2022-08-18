@@ -1,18 +1,27 @@
-import { getDocByName, getObjectByTag, updateObject } from "./FirestoreDAO";
+import { getDocRefByName, getObjectByTag, insertObject, updateObject } from "./FirestoreDAO";
+import readline from "readline";
+import { lex } from "./Lexer";
+import { parse } from "./Parser";
+import { interpret } from "./Interpreter";
+import { objectsReference } from "./Login";
 
-(async () => {
+const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout
+});
 
-    console.log(await getObjectByTag("desktop"));
+rl.on("line", async (line: string) => {
+    try {
+        const tokens = lex(line);
+        const abstractQuery = parse(tokens);
+        const executableQuery = interpret(abstractQuery);
+        console.log(await executableQuery.execute(objectsReference));
+    } catch (e) {
+        console.log(e);
+    }
+    process.stdout.write("> ");
+});
 
-    const desktopSnapshot = await getDocByName("Desktop");
-    const dormSnapshot = await getDocByName("Dorm");
-
-    await updateObject(desktopSnapshot.ref, {
-        relations: {
-            in: [dormSnapshot.ref]
-        }
-    });
-
-    console.log(await getObjectByTag("desktop"));
-
-})();
+rl.on("close", () => {
+    process.exit(0);
+});
