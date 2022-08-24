@@ -1,307 +1,368 @@
-import { Token, TokenType } from "./Lexer";
-import { QueryConstraint, where } from "firebase/firestore/lite";
-import { fieldIsArray, ObjectUpdate } from "./FirestoreDAO";
-
-export class AbstractQuery {
+export interface AbstractQuery {
     action: string;
-    return: Return;
-    filters: FilterList;
-    values: ObjectUpdate;
-
-    constructor(action: string, return_: Return, filters: FilterList, values: ObjectUpdate) {
-        this.action = action;
-        this.return = return_;
-        this.filters = filters;
-        if (this.action.startsWith("insert")) {
-            this.values = values;
-            if (!this.values.tags) {
-                this.values.tags = [];
-            }
-            let name = this.values.name;
-            if (!name) {
-                throw new Error("Name is required");
-            }
-            name = name.toLowerCase().trim();
-            if (this.values.tags.indexOf(name) === -1) {
-                this.values.tags.push(name);
-            }
-        }
-    }
 }
 
-export class FilterList {
-    filters: Field[];
-    operatorIsOr: boolean;
-
-    constructor(filters: Field[], operatorIsOr: boolean) {
-        this.filters = filters;
-        this.operatorIsOr = operatorIsOr;
-    }
-
-    toValueMap(): ObjectUpdate {
-        const valueMap: ObjectUpdate = {};
-        for (const filter of this.filters) {
-            if (fieldIsArray[filter.field]) {
-                valueMap[filter.field] = filter.values;
-            } else {
-                if (filter.values.length > 1) {
-                    throw new Error(`Field ${filter.field} cannot have multiple values`);
-                }
-                valueMap[filter.field] = filter.values[0];
-            }
-        }
-        return valueMap;
-    }
+export interface SelectQuery extends AbstractQuery {
+    action: "select" | "delete";
+    filters: FieldValueMap;
+    orderStatement: string[] | false;
+    operator: string | undefined;
 }
 
-export class Field {
-    field: string;
-    fieldIsArray: boolean;
+export interface InsertQuery extends AbstractQuery {
+    action: "insert";
+    values: FieldValueMap;
+}
+
+export interface UpdateQuery extends AbstractQuery {
+    action: "update";
+    subject: SelectQuery;
+    updates: FieldValueMap;
+}
+
+export interface FieldValueMap {
+    [field: string]: Filter;
+}
+
+export type Filter = StringFilter | SelectQuery;
+
+export interface StringFilter {
     values: string[];
-
-    constructor(field: string, values: string[]) {
-        this.field = field;
-        this.fieldIsArray = fieldIsArray[field];
-        this.values = values;
-    }
-
-    toWhereClause(): QueryConstraint {
-        if (this.values.length == 1) {
-            return where(this.field, this.fieldIsArray ? "array-contains" : "==", this.values[0]);
-        } else {
-            return where(this.field, this.fieldIsArray ? "array-contains-any" : "in", this.values);
-        }
-    }
+    operator: "and" | "or" | undefined;
 }
 
-export interface Return {
-    limit?: number;
-    orderBy?: string;
-}
+export function parse(tokens: string[]): AbstractQuery {
+    const action = tokens[0];
 
-export function parse(tokens: Token[]): AbstractQuery {
-    const firstToken = tokens.shift();
-    if (firstToken.type !== TokenType.Action) {
-        throw new Error("Expected action");
-    }
-    const action = firstToken.value;
+    const actionType = actionTypeMap[action];
 
-    expandShorthand(tokens);
-
-    switch (action.split(" ")[0]) {
+    let result;
+    switch (actionType) {
         case "select":
         case "delete": {
-            const r = parseReturn(tokens);
-
-            const filters = parseFilters(tokens);
-
-            return new AbstractQuery(action, r, filters, {});
+            result = parseStandardSelectStatement(tokens);
+            if (result) {
+                parseFieldValueMap(result.filters);
+                break;
+            }
+            result = parseMyStatement(tokens);
+            if (result) {
+                parseFieldValueMap(result.filters);
+                break;
+            }
+            throw new Error("Failed to parse query");
         }
         case "insert": {
-            const somethingToken = tokens.shift();
-            if (!isSomething(somethingToken)) {
-                throw new Error("Unexpected token: " + somethingToken.value);
+            result = parseInsertStatement(tokens);
+            if (result) {
+                parseFieldValueMap(result.values);
+                break;
             }
-
-            const values = parseValues(tokens);
-
-            return new AbstractQuery(action, {}, new FilterList([], false), values);
+            throw new Error("Failed to parse query");
         }
         case "update": {
-            const r = parseReturn(tokens);
-
-            const filters = parseFilters(tokens);
-
-            if (tokens[0].type == TokenType.To) {
-                const toToken = tokens.shift();
+            result = parseUpdateStatement(tokens);
+            if (result) {
+                parseFieldValueMap(result.updates);
+                break;
             }
-
-            const fieldToken = new Token(TokenType.Filter, action.split(" ")[1]);
-            tokens.unshift(fieldToken);
-
-            const values = parseValues(tokens);
-
-            return new AbstractQuery(action, r, filters, values);
+            throw new Error("Failed to parse query");
         }
     }
+    return result;
 }
 
-function expandShorthand(tokens: Token[]): void {
-    const replacement = [new Token(TokenType.The), new Token(TokenType.Thing), new Token(TokenType.Filter, "tags")];
+function parseStandardSelectStatement(tokens: string[]): SelectQuery | false {
+    tokens = tokens.slice(); // copy
+    const action = tokens.shift();
+    const token = tokens.shift();
+    const output: SelectQuery = {
+        action: actionTypeMap[action],
+        filters: {},
+        orderStatement: false,
+        operator: undefined
+    };
+    if (myKeywords.includes(token)) {
+        let found = false;
+        const orderStatement = [];
+        while (tokens.length > 0) {
+            const nextToken = tokens.shift();
+            if (thingKeywords.includes(nextToken)) {
+                found = true;
+                output.orderStatement = orderStatement;
+                break;
+            }
+            orderStatement.push(nextToken);
+        }
+        if (!found) {
+            return false;
+        }
+        output.orderStatement = orderStatement;
+    } else if (noOrderKeywords.includes(token)) {
 
+    } else {
+        return false;
+    }
+
+    const result = separateFilters(tokens);
+    Object.assign(output, result);
+    return output;
+}
+
+function parseMyStatement(tokens: string[]): SelectQuery | false {
+    tokens = tokens.slice(); // copy
+    const action = tokens.shift();
+    if (!myKeywords.includes(tokens.shift())) {
+        return false;
+    }
+    const result = parseStringLiteralList(tokens);
+    return {
+        action: actionTypeMap[action],
+        filters: {
+            name: result
+        },
+        orderStatement: ["first"],
+        operator: undefined
+    };
+}
+
+function parseInsertStatement(tokens: string[]): InsertQuery | false {
+    tokens = tokens.slice(); // copy
+    const token = tokens.shift();
+    const output: InsertQuery = {
+        action: "insert",
+        values: {}
+    };
+    if (!somethingKeywords.includes(token)) {
+        return false;
+    }
+
+    const result = separateFilters(tokens);
+    if (result.operator == "or") {
+        throw new Error("Cannot use 'or' in an insert query");
+    }
+    output.values = result.filters;
+    return output;
+}
+
+function parseUpdateStatement(tokens: string[]): UpdateQuery | false {
+    tokens = tokens.slice(); // copy
+    const token = tokens.shift();
+    const updateKeyword = updateKeywordMap[token];
+    if (!updateKeyword) {
+        return false;
+    }
+    let field = undefined;
+    let pos = -1;
     for (let i = 0; i < tokens.length; i++) {
-        if (tokens[i].type === TokenType.My) {
-            tokens.splice(i, 1, ...replacement);
+        const token = tokens[i];
+        const f = updateKeyword[token];
+        if (f) {
+            if (pos != -1) {
+                throw new Error("Unexpected field");
+            }
+            pos = i;
+            field = f;
         }
     }
+    if (pos == -1) {
+        return false;
+    }
+    const subjectTokens = tokens.splice(0, pos);
+    subjectTokens.unshift("select");
+    const subject = parseMyStatement(subjectTokens);
+    if (!subject) {
+        throw new Error("Failed to parse subject: " + subjectTokens.join(" "));
+    }
+    tokens.shift();
+    const value = parseStringLiteralList(tokens);
+    const updates = {};
+    updates[field] = value;
+    return {
+        action: "update",
+        subject: subject,
+        updates: updates
+    };
+}
 
-    for (let i = 0; i < tokens.length; i++) {
-        if (tokens[i].type === TokenType.Separator && tokens[i + 1].type === TokenType.Separator) {
-            tokens.splice(i, 1);
-            i--;
+function parseFieldValueMap(fieldValueMap: FieldValueMap): void {
+    for (const field in fieldValueMap) {
+        const value = fieldValueMap[field];
+        const fieldType = fieldTypeMap[field];
+        if (fieldType == "reference") {
+            const tokens = (value as StringFilter).values[0].split(" ");
+            tokens.unshift("select");
+            const result = parseMyStatement(tokens);
+            if (!result) {
+                throw new Error("Failed to parse my statement: " + (value as StringFilter).values[0]);
+            }
+            fieldValueMap[field] = result;
         }
     }
 }
 
-function parseReturn(tokens: Token[]): Return {
-    const firstToken = tokens.shift();
-    if (firstToken.type === TokenType.SimpleReturn) {
-        return {};
-    }
-    if (firstToken.type === TokenType.The) {
-        while (tokens[0].type !== TokenType.Thing) {
-            tokens.shift();
-        }
-        tokens.shift();
-        // TODO: parse the thing
-        return {};
-    }
-    throw new Error("Expected return");
-}
-
-function parseFields(tokens: Token[], singleFieldParse: (list: Token[], operatorIsOr: boolean) => Field): FilterList {
-    const filters: FilterList = new FilterList([], false);
-    if (tokens.length === 0) {
-        return filters;
-    }
-
-    let expecting = isFilter;
-    let tree: Array<any> | Token = [[]];
-
+// expects tokens to be trimmed
+function separateFilters(tokens: string[]): { filters: { [field: string]: StringFilter }, operator: string } {
+    let filterJoinOperator = undefined;
+    const filters = {};
+    let currentFilter = [];
     while (tokens.length > 0) {
-        const token = tokens.shift();
-        if (!expecting(token)) {
-            if (isFilterEnd(token)) {
-                tokens.unshift(token);
-                break;
+        const token = tokens.pop();
+        currentFilter.unshift(token);
+        if (filterMap[token]) {
+            const field = currentFilter.shift();
+            filters[filterMap[field]] = parseStringLiteralList(currentFilter);
+            currentFilter = [];
+            if (tokens.length == 0) break;
+            const separator = tokens.pop();
+            switch (separator) {
+                case "and":
+                case "or":
+                    if (filterJoinOperator) {
+                        throw new Error("Unexpected filter join operator");
+                    }
+                    filterJoinOperator = separator;
+                    const oxfordComma = tokens.pop();
+                    if (oxfordComma !== ",") {
+                        tokens.push(oxfordComma);
+                        console.log("Not an oxford comma");
+                    }
+                    break;
+                case ",":
+                    break;
+                default:
+                    console.log("Missing separator");
             }
-            throw new Error(`Unexpected token ${token.value}`);
-        }
-        switch (expecting) {
-            case isFilter:
-                expecting = isStringLiteral;
-                tree[tree.length - 1].push(token);
-                break;
-            case isStringLiteral:
-                expecting = isSeparator;
-                tree[tree.length - 1].push(token);
-                break;
-            case isSeparator:
-                expecting = isStringLiteralOrFilter;
-                tree[tree.length - 1].push(token);
-                break;
-            case isStringLiteralOrFilter:
-                if (isFilter(token)) {
-                    expecting = isStringLiteral;
-                    tree.push([token]);
-                } else {
-                    expecting = isSeparator;
-                    tree[tree.length - 1].push(token);
-                }
         }
     }
-    for (let i = 0; i < tree.length - 1; i += 2) {
-        tree.splice(i + 1, 0, tree[i].pop());
+    if (currentFilter.length > 0) {
+        throw new Error("Incomplete starting filter: " + currentFilter.join(" "));
     }
-
-    filters.operatorIsOr = removeSeparators(tree, 0);
-
-    for (const list of tree) {
-        const subtreeOperatorIsOr = removeSeparators(list, 1);
-        filters.filters.push(singleFieldParse(list, subtreeOperatorIsOr));
-    }
-
-    return filters;
+    return {
+        filters: filters,
+        operator: filterJoinOperator
+    };
 }
 
-function isFilter(token: Token): boolean {
-    return token.type === TokenType.Filter;
-}
-
-function isSeparator(token: Token): boolean {
-    return token.type === TokenType.Separator;
-}
-
-function isStringLiteral(token: Token): boolean {
-    return token.type === TokenType.StringLiteral;
-}
-
-function isStringLiteralOrFilter(token: Token): boolean {
-    return isStringLiteral(token) || isFilter(token);
-}
-
-function isSomething(token: Token): boolean {
-    return token.type === TokenType.Something;
-}
-
-function isFilterEnd(token: Token): boolean {
-    return token.type === TokenType.End || token.type === TokenType.To;
-}
-
-function removeSeparators(list: (any | Token)[], offset: number): boolean {
-
-    let operatorIsOr = null;
-    for (let i = 1; i < list.length; i++) {
-        switch (list[i].value) {
+function parseStringLiteralList(tokens: string[]): StringFilter {
+    const strings = [];
+    let separator = undefined;
+    let currentString = [];
+    while (tokens.length > 0) {
+        const string = tokens.shift();
+        switch (string) {
             case "and":
-                if (operatorIsOr == true) {
-                    throw new Error("Cannot use 'and' with 'or'");
-                }
-                operatorIsOr = false;
-                list.splice(i, 1);
-                break;
             case "or":
-                if (operatorIsOr == false) {
-                    throw new Error("Cannot use 'or' with 'and'");
+                if (separator) {
+                    throw new Error("Unexpected filter join operator");
                 }
-                operatorIsOr = true;
-                list.splice(i, 1);
+                separator = string;
                 break;
             case ",":
-                list.splice(i, 1);
+                if (separator) {
+                    throw new Error("Unexpected comma after 'and' or 'or'");
+                }
                 break;
+            default:
+                currentString.push(string);
+                continue;
         }
+        if (currentString.length == 0) {
+            throw new Error("Unexpected separator");
+        }
+        strings.push(currentString.join(" "));
     }
-    if (operatorIsOr == null) {
-        operatorIsOr = false;
+    if (currentString.length == 0) {
+        throw new Error("Unexpected end of filter");
     }
-    return operatorIsOr;
+    strings.push(currentString.join(" "));
+    return {
+        values: strings,
+        operator: separator
+    };
 }
 
-function parseFilter(list: Token[], operatorIsOr: boolean): Field {
-    if (!operatorIsOr && list.length >= 3) {
-        throw new Error("Cannot use 'and' in a filter");
-    }
-    let field = list.shift().value;
-    if (field === "name") {
-        field = "tags";
-    }
-    const values = [];
-    while (list.length > 0) {
-        const token = list.shift();
-        values.push(token.value.toLowerCase());
-    }
-    return new Field(field, values);
-}
+const actionTypeMap = {
+    "select": "select",
+    "show me": "select",
+    "find": "select",
+    "fetch": "select",
+    "get": "select",
+    "where is": "select",
+    "delete": "delete",
+    "toss": "delete",
+    "remove": "delete",
+    "insert": "insert",
+    "add": "insert",
+    "create": "insert",
+    "move": "update",
+    "put": "update",
+    "rename": "update",
+    "describe": "update",
+    "tag": "update"
+};
 
-function parseValue(list: Token[], operatorIsOr: boolean): Field {
-    if (operatorIsOr && list.length >= 3) {
-        throw new Error("Cannot use 'or' in a value");
-    }
-    let field = list.shift().value;
-    const values = [];
-    while (list.length > 0) {
-        const token = list.shift();
-        values.push(token.value);
-    }
-    return new Field(field, values);
-}
+const filterMap = {
+    "named": "name",
+    "called": "name",
+    "tagged": "tag",
+    "in": "in",
+    "inside": "in",
+    "within": "in",
+    "on": "on",
+    "by": "by",
+    "beside": "by",
+    "near": "by",
+    "around": "by"
+};
 
-function parseFilters(list: Token[]): FilterList {
-    return parseFields(list, parseFilter);
-}
+export const fieldTypeMap = {
+    "name": "string",
+    "description": "string",
+    "tag": "string array",
+    "in": "reference",
+    "on": "reference",
+    "by": "reference"
+};
 
-function parseValues(tokens: Token[]): ObjectUpdate {
-    const filters = parseFields(tokens, parseValue);
-    return filters.toValueMap();
-}
+const myKeywords = [
+    "my",
+    "the"
+];
+
+const thingKeywords = [
+    "thing",
+    "object",
+    "item",
+    "entity",
+    "things",
+    "objects",
+    "items",
+    "entities"
+];
+
+const noOrderKeywords = [
+    "anything",
+    "everything",
+    "all"
+];
+
+const somethingKeywords = [
+    "something"
+];
+
+const updateKeywordMap: { [keyword: string]: { [keyword: string]: string } } = {
+    "rename": {"to": "name"},
+    "describe": {"as": "description"},
+    "tag": {"as": "tag", "with": "tag"},
+    "put": {
+        "in": "in",
+        "inside": "in",
+        "within": "in",
+        "on": "on",
+        "by": "by",
+        "beside": "by",
+        "near": "by",
+        "around": "by"
+    }
+};

@@ -1,9 +1,7 @@
-import { getDocRefByName, getObjectByTag, insertObject, updateObject } from "./FirestoreDAO";
 import readline from "readline";
 import { lex } from "./Lexer";
 import { parse } from "./Parser";
-import { interpret } from "./Interpreter";
-import { objectsReference } from "./Login";
+
 
 const rl = readline.createInterface({
     input: process.stdin,
@@ -13,9 +11,8 @@ const rl = readline.createInterface({
 rl.on("line", async (line: string) => {
     try {
         const tokens = lex(line);
-        const abstractQuery = parse(tokens);
-        const executableQuery = interpret(abstractQuery);
-        console.log(await executableQuery.execute(objectsReference));
+        const result = parse(tokens);
+        console.log(result);
     } catch (e) {
         console.log(e);
     }
